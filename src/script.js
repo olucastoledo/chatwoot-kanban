@@ -3,7 +3,7 @@ const API_BASE_URL = "/api/v1";
 const API_BUILD_URL_TO_REDIRECT = "/build-url-to-redirect";
 let apiToken = "";
 let accountId = "";
-let customEtapas = ["Lead", "Contato Inicial", "Apresentação", "Proposta", "Negociação", "Fechado Ganho", "Fechado Perdido"];
+let customEtapas = ["Aguardando...", "Lead", "Contato Inicial", "Apresentação", "Proposta", "Negociação", "Fechado Ganho", "Fechado Perdido"];
 
 // Elementos DOM
 const loadDataBtn = document.getElementById("load-data");
@@ -34,8 +34,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     const accountIdFromUrl = urlParams.get("accountId");
 
     if (configData.hasGlobalCredentials) {
-      // Ocultar formulário de credenciais
-      document.getElementById("header-controls").style.display = "none";
+      // Ocultar cabeçalho completo para deixar apenas o canvas do Kanban
+      const header = document.querySelector("header");
+      if (header) {
+        header.style.display = "none";
+      }
+      
       // Usar credenciais globais (o token será injetado pelo proxy no backend)
       apiToken = "global"; 
       accountId = accountIdFromUrl || configData.accountId || "2";
@@ -155,7 +159,14 @@ async function checkAndCreateCustomAttributes() {
         console.error("Falha ao criar o atributo 'etapa_kanban'. Usando etapas padrão.");
       }
     } else {
-      customEtapas = etapaDef.attribute_values || customEtapas;
+      // Garantir que a primeira opção seja 'Aguardando...' se ela não existir
+      let remoteEtapas = etapaDef.attribute_values || [];
+      if (remoteEtapas.length > 0) {
+        if (!remoteEtapas.includes("Aguardando...")) {
+          remoteEtapas = ["Aguardando...", ...remoteEtapas];
+        }
+        customEtapas = remoteEtapas;
+      }
     }
     
     if (!valorDef) {
@@ -189,10 +200,7 @@ function buildKanbanColumns() {
   const container = document.getElementById("kanban-container");
   container.innerHTML = "";
   
-  // Coluna inicial para conversas sem etapa definida
-  createColumnDOM("Sem Etapa", "sem-etapa");
-  
-  // Demais etapas cadastradas
+  // Demais etapas cadastradas (a primeira delas será "Aguardando...")
   customEtapas.forEach(etapa => {
     const slug = slugify(etapa);
     createColumnDOM(etapa, slug);
@@ -260,7 +268,8 @@ function distributeConversations(conversations) {
     const customAttributes = conversation.custom_attributes || {};
     const etapa = customAttributes.etapa_kanban;
     
-    let targetSlug = "sem-etapa";
+    // Qualquer conversa sem etapa definida vai por padrão para a primeira coluna ("Aguardando...")
+    let targetSlug = "aguardando"; 
     if (etapa && customEtapas.includes(etapa)) {
       targetSlug = slugify(etapa);
     }
@@ -324,7 +333,6 @@ function createConversationCard(conversation) {
 
   // Clique no card abre a conversa no Chatwoot em nova guia
   card.addEventListener("click", (e) => {
-    // Apenas se não estiver arrastando
     if (e.target.closest(".kanban-item")) {
       redirectToChatwoot(conversation.id, conversation.account_id);
     }
@@ -375,7 +383,6 @@ function initializeSortable() {
 // Faz requisição POST para atualizar a etapa_kanban na conversa
 async function updateConversationEtapa(conversationId, newEtapa) {
   try {
-    const etapaValue = newEtapa === "Sem Etapa" ? null : newEtapa;
     const url = `${API_BASE_URL}/accounts/${accountId}/conversations/${conversationId}/custom_attributes`;
     const response = await fetch(url, {
       method: "POST",
@@ -385,7 +392,7 @@ async function updateConversationEtapa(conversationId, newEtapa) {
       },
       body: JSON.stringify({
         custom_attributes: {
-          etapa_kanban: etapaValue
+          etapa_kanban: newEtapa
         }
       }),
     });

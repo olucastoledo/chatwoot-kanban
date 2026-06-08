@@ -18,10 +18,14 @@ app.use(express.static(path.join(__dirname)));
 
 // Endpoint para ler as configurações globais de ambiente
 app.get("/api/config", (req, res) => {
+  let baseUrl = process.env.BASE_URL || "";
+  if (!baseUrl && process.env.CHATWOOT_URL) {
+    baseUrl = process.env.CHATWOOT_URL.replace("https://", "").replace("http://", "").split("/")[0];
+  }
   res.json({
     hasGlobalCredentials: !!process.env.CHATWOOT_API_KEY,
     accountId: process.env.CHATWOOT_ACCOUNT_ID || "",
-    baseUrl: process.env.BASE_URL || ""
+    baseUrl: baseUrl
   });
 });
 
@@ -38,7 +42,12 @@ app.use("/api/v1", async (req, res) => {
   }
 
   try {
-    const chatwootUrl = `https://${process.env.BASE_URL}/api/v1${req.url}`;
+    let baseUrl = process.env.BASE_URL || "";
+    if (!baseUrl && process.env.CHATWOOT_URL) {
+      baseUrl = process.env.CHATWOOT_URL.replace("https://", "").replace("http://", "").split("/")[0];
+    }
+
+    const chatwootUrl = `https://${baseUrl}/api/v1${req.url}`;
 
     const config = {
       method: req.method,
