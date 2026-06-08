@@ -12,8 +12,8 @@
   </head>
   <body>
     <header>
-      <h1>Kanban</h1>
-      <div class="header-controls">
+      <h1>CRM Kanban</h1>
+      <div class="header-controls" id="header-controls">
         <div class="input-group">
           <input
             type="password"
@@ -35,23 +35,8 @@
     </header>
 
     <main>
-      <div class="kanban-container">
-        <div class="kanban-column" id="pending">
-          <h2>Pendentes <span class="counter">0</span></h2>
-          <div class="kanban-items"></div>
-        </div>
-        <div class="kanban-column" id="open">
-          <h2>Em Aberto <span class="counter">0</span></h2>
-          <div class="kanban-items"></div>
-        </div>
-        <div class="kanban-column" id="snoozed">
-          <h2>Adiados <span class="counter">0</span></h2>
-          <div class="kanban-items"></div>
-        </div>
-        <div class="kanban-column" id="resolved">
-          <h2>Resolvidos <span class="counter">0</span></h2>
-          <div class="kanban-items"></div>
-        </div>
+      <div class="kanban-container" id="kanban-container">
+        <!-- As colunas serão carregadas dinamicamente aqui -->
       </div>
     </main>
 

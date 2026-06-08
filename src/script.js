@@ -3,132 +3,223 @@ const API_BASE_URL = "/api/v1";
 const API_BUILD_URL_TO_REDIRECT = "/build-url-to-redirect";
 let apiToken = "";
 let accountId = "";
+let customEtapas = ["Lead", "Contato Inicial", "Apresentação", "Proposta", "Negociação", "Fechado Ganho", "Fechado Perdido"];
 
 // Elementos DOM
 const loadDataBtn = document.getElementById("load-data");
 const apiTokenInput = document.getElementById("api-token");
 const accountIdInput = document.getElementById("account-id");
 const toggleApiTokenBtn = document.getElementById("toggle-api-token");
-const kanbanColumns = document.querySelectorAll(".kanban-column");
 const modal = document.getElementById("conversation-modal");
 const closeModalBtn = document.querySelector(".close");
 const conversationDetails = document.getElementById("conversation-details");
 
 // Inicialização
-document.addEventListener("DOMContentLoaded", () => {
-  // Verificar se há token e account ID salvos no localStorage
-  const savedToken = localStorage.getItem("chatwoot_api_token");
-  const savedAccountId = localStorage.getItem("chatwoot_account_id");
-
-  if (savedToken) {
-    apiTokenInput.value = savedToken;
-    apiToken = savedToken;
-  }
-
-  if (savedAccountId) {
-    accountIdInput.value = savedAccountId;
-    accountId = savedAccountId;
-  }
-
-  // Inicializar Sortable.js para cada coluna
-  // kanbanColumns.forEach((column) => {
-  //   const columnId = column.id;
-  //   const itemsContainer = column.querySelector(".kanban-items");
-
-  //   new Sortable(itemsContainer, {
-  //     group: "kanban",
-  //     animation: 150,
-  //     ghostClass: "sortable-ghost",
-  //     onEnd: function (evt) {
-  //       const itemId = evt.item.dataset.id;
-  //       const newStatus = evt.to.parentElement.id;
-
-  //       if (itemId && newStatus) {
-  //         updateConversationStatus(itemId, newStatus);
-  //       }
-  //     },
-  //   });
-  // });
-
-  // Event listeners
+document.addEventListener("DOMContentLoaded", async () => {
+  // Event listeners básicos
   loadDataBtn.addEventListener("click", loadConversations);
   closeModalBtn.addEventListener("click", () => (modal.style.display = "none"));
   window.addEventListener("click", (e) => {
     if (e.target === modal) modal.style.display = "none";
   });
-
-  // Event listener para o botão de toggle do token
   toggleApiTokenBtn.addEventListener("click", toggleApiTokenVisibility);
+
+  try {
+    // 1. Verificar se existem credenciais globais configuradas no backend
+    const configRes = await fetch("/api/config");
+    const configData = await configRes.json();
+
+    if (configData.hasGlobalCredentials) {
+      // Ocultar formulário de credenciais
+      document.getElementById("header-controls").style.display = "none";
+      // Usar credenciais globais (o token será injetado pelo proxy no backend)
+      apiToken = "global"; 
+      accountId = configData.accountId;
+      
+      // Carregar automaticamente
+      await loadConversations();
+    } else {
+      // Fallback: carregar credenciais do localStorage se existirem
+      const savedToken = localStorage.getItem("chatwoot_api_token");
+      const savedAccountId = localStorage.getItem("chatwoot_account_id");
+
+      if (savedToken) {
+        apiTokenInput.value = savedToken;
+        apiToken = savedToken;
+      }
+
+      if (savedAccountId) {
+        accountIdInput.value = savedAccountId;
+        accountId = savedAccountId;
+      }
+
+      if (savedToken && savedAccountId) {
+        await loadConversations();
+      }
+    }
+  } catch (error) {
+    console.error("Erro na inicialização do Kanban:", error);
+  }
 });
 
 // Funções principais
 async function loadConversations() {
-  apiToken = apiTokenInput.value.trim();
-  accountId = accountIdInput.value.trim();
+  if (apiToken !== "global") {
+    apiToken = apiTokenInput.value.trim();
+    accountId = accountIdInput.value.trim();
+  }
 
   if (!apiToken || !accountId) {
     alert("Por favor, insira o token de API e o ID da conta.");
     return;
   }
 
-  // Salvar no localStorage para uso futuro
-  localStorage.setItem("chatwoot_api_token", apiToken);
-  localStorage.setItem("chatwoot_account_id", accountId);
+  // Salvar no localStorage se não for credencial global
+  if (apiToken !== "global") {
+    localStorage.setItem("chatwoot_api_token", apiToken);
+    localStorage.setItem("chatwoot_account_id", accountId);
+  }
 
   try {
-    // Limpar colunas existentes
-    document.querySelectorAll(".kanban-items").forEach((column) => {
-      column.innerHTML = "";
-    });
-
-    // Mostrar loading
     showLoading();
 
-    // Buscar conversas da API
+    // 1. Verificar e criar atributos personalizados no Chatwoot se necessário
+    await checkAndCreateCustomAttributes();
+
+    // 2. Construir colunas dinâmicas no DOM baseadas nas etapas do Kanban
+    buildKanbanColumns();
+
+    // 3. Buscar conversas da API do Chatwoot (otimizado sem resolved para não travar o navegador)
     const conversations = await fetchConversations();
 
-    // console.log("Conversas recebidas:", conversations);
+    // 4. Distribuir conversas nas colunas
+    distributeConversations(conversations);
 
-    // Verificar se conversations é um array
-    if (!Array.isArray(conversations)) {
-      throw new Error(
-        "Formato de dados inválido: esperado um array de conversas"
-      );
-    }
+    // 5. Inicializar o drag and drop com Sortable.js
+    initializeSortable();
 
-    // Agrupar conversas por status
-    const groupedConversations = groupConversationsByStatus(conversations);
+    // 6. Calcular somatórios de valores e contadores
+    recalculateColumnTotals();
 
-    // console.log("Conversas agrupadas:", groupedConversations);
-
-    // Renderizar conversas nas colunas
-    renderConversations(groupedConversations);
-
-    // Esconder loading
     hideLoading();
   } catch (error) {
-    console.error("Erro ao carregar conversas:", error);
+    console.error("Erro ao carregar o Kanban:", error);
     hideLoading();
-    alert(`Erro ao carregar conversas: ${error.message}`);
+    alert(`Erro ao carregar o Kanban: ${error.message}`);
   }
 }
 
-function showLoading() {
-  const loadingOverlay = document.getElementById('loading-overlay');
-  loadingOverlay.style.display = 'flex';
+// Verifica se os atributos etapa_kanban e valor_venda existem e os cria se necessário
+async function checkAndCreateCustomAttributes() {
+  try {
+    const res = await fetch(`${API_BASE_URL}/accounts/${accountId}/custom_attribute_definitions`, {
+      headers: { 
+        api_access_token: apiToken,
+        "Content-Type": "application/json"
+      }
+    });
+    
+    if (!res.ok) {
+      console.warn("Não foi possível buscar as definições de atributos personalizados do Chatwoot.");
+      return;
+    }
+    
+    const definitions = await res.json();
+    
+    const etapaDef = definitions.find(d => d.attribute_key === "etapa_kanban");
+    const valorDef = definitions.find(d => d.attribute_key === "valor_venda");
+    
+    if (!etapaDef) {
+      console.log("Criando atributo personalizado 'etapa_kanban' no Chatwoot...");
+      const createRes = await fetch(`${API_BASE_URL}/accounts/${accountId}/custom_attribute_definitions`, {
+        method: "POST",
+        headers: {
+          api_access_token: apiToken,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          custom_attribute_definition: {
+            attribute_display_name: "Etapa Kanban",
+            attribute_key: "etapa_kanban",
+            attribute_display_type: "list",
+            attribute_model: "conversation_attribute",
+            attribute_values: customEtapas
+          }
+        })
+      });
+      if (!createRes.ok) {
+        console.error("Falha ao criar o atributo 'etapa_kanban'. Usando etapas padrão.");
+      }
+    } else {
+      customEtapas = etapaDef.attribute_values || customEtapas;
+    }
+    
+    if (!valorDef) {
+      console.log("Criando atributo personalizado 'valor_venda' no Chatwoot...");
+      const createRes = await fetch(`${API_BASE_URL}/accounts/${accountId}/custom_attribute_definitions`, {
+        method: "POST",
+        headers: {
+          api_access_token: apiToken,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          custom_attribute_definition: {
+            attribute_display_name: "Valor da Venda",
+            attribute_key: "valor_venda",
+            attribute_display_type: "currency",
+            attribute_model: "conversation_attribute"
+          }
+        })
+      });
+      if (!createRes.ok) {
+        console.error("Falha ao criar o atributo 'valor_venda'.");
+      }
+    }
+  } catch (e) {
+    console.error("Erro na verificação de atributos personalizados:", e);
+  }
 }
 
-function hideLoading() {
-  const loadingOverlay = document.getElementById('loading-overlay');
-  loadingOverlay.style.display = 'none';
+// Cria a estrutura de colunas do Kanban de forma dinâmica no HTML
+function buildKanbanColumns() {
+  const container = document.getElementById("kanban-container");
+  container.innerHTML = "";
+  
+  // Coluna inicial para conversas sem etapa definida
+  createColumnDOM("Sem Etapa", "sem-etapa");
+  
+  // Demais etapas cadastradas
+  customEtapas.forEach(etapa => {
+    const slug = slugify(etapa);
+    createColumnDOM(etapa, slug);
+  });
 }
 
+function createColumnDOM(title, slug) {
+  const container = document.getElementById("kanban-container");
+  const col = document.createElement("div");
+  col.className = "kanban-column";
+  col.id = `col-${slug}`;
+  col.dataset.etapa = title;
+  
+  col.innerHTML = `
+    <h2>
+      ${title} 
+      <span class="counter">0</span>
+      <span class="column-total" id="total-${slug}">R$ 0,00</span>
+    </h2>
+    <div class="kanban-items"></div>
+  `;
+  container.appendChild(col);
+}
+
+// Busca as conversas do Chatwoot de forma otimizada para evitar travamentos
 async function fetchConversations() {
-  // Lista de todos os status possíveis no Chatwoot
-  const statuses = ["pending", "open", "resolved", "snoozed"];
+  // Carregamos apenas status ativos. O status "resolved" é omitido por padrão para evitar lentidão
+  // já que contas em produção possuem milhares de conversas resolvidas.
+  const statuses = ["pending", "open", "snoozed"];
   let allConversations = [];
 
-  // Fazer uma requisição para cada status
   for (const status of statuses) {
     try {
       const url = `${API_BASE_URL}/accounts/${accountId}/conversations?status=${status}`;
@@ -140,16 +231,9 @@ async function fetchConversations() {
         },
       });
 
-      if (!response.ok) {
-        console.warn(
-          `Erro ao buscar conversas com status ${status}: ${response.status} ${response.statusText}`
-        );
-        continue; // Continua com o próximo status mesmo se um falhar
-      }
+      if (!response.ok) continue;
 
       const data = await response.json();
-
-      // Verificar se a estrutura contém data.payload (como no seu JSON)
       let conversations = [];
       if (data.data && data.data.payload) {
         conversations = data.data.payload;
@@ -157,358 +241,197 @@ async function fetchConversations() {
         conversations = data.data || data.payload || [];
       }
 
-      console.log(
-        `Conversas encontradas com status ${status}:`,
-        conversations.length
-      );
-
-      // Adicionar as conversas à lista geral
       allConversations = allConversations.concat(conversations);
     } catch (error) {
-      console.error(`Erro ao buscar conversas com status ${status}:`, error);
-      // Continua com o próximo status mesmo se um falhar
+      console.error(`Erro ao buscar status ${status}:`, error);
     }
   }
-
-  // console.log(`Total de conversas encontradas: ${allConversations.length}`);
-  // console.log("Todas as conversas:", JSON.stringify(allConversations, null, 2));
 
   return allConversations;
 }
 
-function groupConversationsByStatus(conversations) {
-  const grouped = {
-    pending: [],
-    open: [],
-    resolved: [],
-    snoozed: [],
-  };
-
-  conversations.forEach((conversation) => {
-    const status = conversation.status;
-    if (grouped[status]) {
-      grouped[status].push(conversation);
+// Distribui os cards nas colunas com base no custom_attribute
+function distributeConversations(conversations) {
+  conversations.forEach(conversation => {
+    const customAttributes = conversation.custom_attributes || {};
+    const etapa = customAttributes.etapa_kanban;
+    
+    let targetSlug = "sem-etapa";
+    if (etapa && customEtapas.includes(etapa)) {
+      targetSlug = slugify(etapa);
+    }
+    
+    const column = document.getElementById(`col-${targetSlug}`);
+    if (column) {
+      const itemsContainer = column.querySelector(".kanban-items");
+      const card = createConversationCard(conversation);
+      itemsContainer.appendChild(card);
     }
   });
-
-  return grouped;
 }
 
-function renderConversations(groupedConversations) {
-  // Atualizar contadores e renderizar itens para cada coluna
-  Object.keys(groupedConversations).forEach((status) => {
-    const column = document.getElementById(status);
-    const itemsContainer = column.querySelector(".kanban-items");
-    const counter = column.querySelector(".counter");
-    const conversations = groupedConversations[status];
+function createConversationCard(conversation) {
+  const card = document.createElement("div");
+  card.className = "kanban-item";
+  card.dataset.id = conversation.id;
+  
+  // Guardar valor da venda no dataset para cálculos rápidos locais
+  const valorVenda = parseFloat(conversation.custom_attributes?.valor_venda) || 0;
+  card.dataset.valor = valorVenda;
 
-    // Atualizar contador
-    counter.textContent = conversations.length;
+  // Nome do cliente
+  const senderName = conversation.meta?.sender?.name || conversation.sender?.name || `Cliente #${conversation.id}`;
 
-    // Renderizar cada conversa
-    conversations.forEach((conversation) => {
-      const item = createConversationItem(conversation);
-      itemsContainer.appendChild(item);
-    });
-  });
-}
-
-function createConversationItem(conversation) {
-  const item = document.createElement("div");
-  item.className = "kanban-item";
-  item.dataset.id = conversation.id;
-
-  // Verificar se existe created_at, senão usar timestamp ou data atual
-  let createdAt;
+  // Data
+  let createdAt = new Date();
   if (conversation.created_at) {
-    createdAt = new Date(conversation.created_at * 1000); // Multiplicar por 1000 pois vem em timestamp Unix
-  } else if (conversation.timestamp) {
-    createdAt = new Date(conversation.timestamp * 1000);
-  } else {
-    createdAt = new Date();
+    createdAt = new Date(conversation.created_at * 1000);
   }
-
-  // Determinar prioridade com base em algum critério (exemplo: tempo de espera)
-  const now = new Date();
-  const hoursDiff = Math.floor((now - createdAt) / (1000 * 60 * 60));
-
-  const priority = conversation.priority;
-  // let priority = "low";
-  // if (hoursDiff > 24) {
-  //   priority = "high";
-  // } else if (hoursDiff > 6) {
-  //   priority = "medium";
-  // }
-
-  // Formatar data
   const formattedDate = new Intl.DateTimeFormat("pt-BR", {
     day: "2-digit",
     month: "2-digit",
-    year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
   }).format(createdAt);
 
-  // Obter última mensagem de forma mais segura
+  // Última mensagem
   let lastMessage = "Sem mensagens";
-  if (
-    conversation.messages &&
-    Array.isArray(conversation.messages) &&
-    conversation.messages.length > 0
-  ) {
+  if (conversation.messages && conversation.messages.length > 0) {
     const lastMsg = conversation.messages[conversation.messages.length - 1];
-    lastMessage =
-      lastMsg.content ||
-      lastMsg.processed_message_content ||
-      "Mensagem sem conteúdo";
-  } else if (
-    conversation.last_non_activity_message &&
-    conversation.last_non_activity_message.content
-  ) {
+    lastMessage = lastMsg.content || "Mensagem sem texto";
+  } else if (conversation.last_non_activity_message?.content) {
     lastMessage = conversation.last_non_activity_message.content;
   }
+  const truncatedMessage = lastMessage.length > 60 ? lastMessage.substring(0, 60) + "..." : lastMessage;
 
-  // Truncar mensagem se for muito longa
-  const truncatedMessage =
-    lastMessage.length > 100
-      ? lastMessage.substring(0, 100) + "..."
-      : lastMessage;
+  // Valor da Venda formatado
+  const formattedVal = valorVenda > 0 
+    ? `<span class="card-value">${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(valorVenda)}</span>` 
+    : '';
 
-  // Obter nome do remetente de forma mais robusta
-  const senderName =
-    conversation.meta?.sender?.name ||
-    conversation.sender?.name ||
-    `Cliente #${conversation.id}`;
-
-  const calcPriority = (() => {
-    if (priority) {
-      const priorityOptions = {
-        high: "Alta",
-        medium: "Média",
-        low: "Baixa",
-      };
-      const priorityDesc = priorityOptions[priority] || "";
-      return `<span class="priority ${priority}">${priorityDesc}</span>`;
-    }
-    return "";
-  })();
-
-  item.innerHTML = `
+  card.innerHTML = `
     <h3>${senderName}</h3>
     <p>${truncatedMessage}</p>
     <div class="meta">
       <span>${formattedDate}</span>
-      ${calcPriority}  
-    </div>`;
+      ${formattedVal}
+    </div>
+  `;
 
-  // Adicionar evento de clique para abrir modal com detalhes
-  item.addEventListener("click", (e) => {
-    // Evitar que o clique acione o drag and drop
-    if (
-      e.target.classList.contains("kanban-item") ||
-      e.target.parentElement.classList.contains("kanban-item")
-    ) {
-      showConversationDetails(conversation);
+  // Clique no card abre a conversa no Chatwoot em nova guia
+  card.addEventListener("click", (e) => {
+    // Apenas se não estiver arrastando
+    if (e.target.closest(".kanban-item")) {
+      redirectToChatwoot(conversation.id, conversation.account_id);
     }
   });
 
-  return item;
+  return card;
 }
 
-async function showConversationDetails(conversation) {
-  const { id, account_id } = conversation;
-  const url = await fetch(
-    `${API_BUILD_URL_TO_REDIRECT}?accountId=${account_id}&conversationId=${id}`,
-    {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-      },
-    }
-  );
-  const { url: urlChat } = await url.json();
-  open(urlChat, "_blank");
-
-  // console.log(process.env.BASE_URL, id, account_id);
-  // try {
-  //   // Buscar detalhes completos da conversa
-  //   const fullConversation = await fetchConversationDetails(conversation.id);
-  //   // Renderizar detalhes no modal
-  //   renderConversationDetails(fullConversation);
-  //   // Mostrar modal
-  //   modal.style.display = "block";
-  // } catch (error) {
-  //   console.error("Erro ao buscar detalhes da conversa:", error);
-  //   alert("Erro ao buscar detalhes da conversa.");
-  // }
-}
-
-async function fetchConversationDetails(conversationId) {
-  const url = `${API_BASE_URL}/accounts/${accountId}/conversations/${conversationId}`;
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      api_access_token: apiToken,
-      "Content-Type": "application/json",
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Erro na API: ${response.status} ${response.statusText}`);
-  }
-
-  return await response.json();
-}
-
-function renderConversationDetails(conversation) {
-  conversationDetails.innerHTML = "";
-
-  // Obter informações do cliente de forma mais robusta
-  const sender = conversation.meta?.sender || conversation.sender || {};
-  const clientName = sender.name || `Cliente #${conversation.id}`;
-  const clientEmail = sender.email || "N/A";
-  const clientPhone = sender.phone_number || "N/A";
-
-  // Informações do cliente
-  const clientInfo = document.createElement("div");
-  clientInfo.className = "client-info";
-  clientInfo.innerHTML = `
-        <h3>Cliente: ${clientName}</h3>
-        <p>Email: ${clientEmail}</p>
-        <p>Telefone: ${clientPhone}</p>
-        <p>Status: ${getStatusLabel(conversation.status)}</p>
-        <p>ID da Conversa: ${conversation.id}</p>
-        <hr>
-    `;
-  conversationDetails.appendChild(clientInfo);
-
-  // Mensagens
-  if (
-    conversation.messages &&
-    Array.isArray(conversation.messages) &&
-    conversation.messages.length > 0
-  ) {
-    const messagesContainer = document.createElement("div");
-    messagesContainer.className = "messages-container";
-
-    conversation.messages.forEach((message) => {
-      const messageEl = document.createElement("div");
-
-      // Determinar tipo de mensagem de forma mais robusta
-      const isIncoming =
-        message.sender_type === "Contact" || message.sender_type === "User";
-      const isBot = message.sender_type === "AgentBot";
-
-      let messageClass = "message ";
-      if (isIncoming) {
-        messageClass += "incoming";
-      } else if (isBot) {
-        messageClass += "bot";
-      } else {
-        messageClass += "outgoing";
-      }
-
-      messageEl.className = messageClass;
-
-      // Formatar timestamp corretamente
-      let messageTime;
-      if (message.created_at) {
-        // Se created_at é timestamp Unix
-        if (typeof message.created_at === "number") {
-          messageTime = new Date(message.created_at * 1000);
-        } else {
-          messageTime = new Date(message.created_at);
-        }
-      } else {
-        messageTime = new Date();
-      }
-
-      const formattedTime = new Intl.DateTimeFormat("pt-BR", {
-        day: "2-digit",
-        month: "2-digit",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      }).format(messageTime);
-
-      // Obter nome do remetente
-      let senderName = "Desconhecido";
-      if (isIncoming) {
-        senderName = message.sender?.name || sender.name || "Cliente";
-      } else if (isBot) {
-        senderName = message.sender?.name || "Bot";
-      } else {
-        senderName = message.sender?.name || "Atendente";
-      }
-
-      // Obter conteúdo da mensagem
-      const messageContent =
-        message.content ||
-        message.processed_message_content ||
-        "Mensagem sem conteúdo";
-
-      messageEl.innerHTML = `
-                <div class="sender">${senderName}</div>
-                <div class="content">${messageContent}</div>
-                <div class="time">${formattedTime}</div>
-            `;
-
-      messagesContainer.appendChild(messageEl);
-    });
-
-    conversationDetails.appendChild(messagesContainer);
-  } else {
-    const noMessages = document.createElement("p");
-    noMessages.textContent = "Não há mensagens nesta conversa.";
-    conversationDetails.appendChild(noMessages);
-  }
-}
-
-async function updateConversationStatus(conversationId, newStatus) {
+async function redirectToChatwoot(conversationId, accountIdVal) {
   try {
-    const url = `${API_BASE_URL}/accounts/${accountId}/conversations/${conversationId}/status`;
+    const url = `${API_BUILD_URL_TO_REDIRECT}?accountId=${accountIdVal}&conversationId=${conversationId}`;
+    const response = await fetch(url);
+    const data = await response.json();
+    if (data.url) {
+      // Abre a conversa do Chatwoot pai
+      window.open(data.url, "_blank");
+    }
+  } catch (error) {
+    console.error("Erro ao redirecionar:", error);
+  }
+}
+
+// Inicializa o Sortable.js em cada coluna
+function initializeSortable() {
+  const columns = document.querySelectorAll(".kanban-column");
+  columns.forEach(column => {
+    const itemsContainer = column.querySelector(".kanban-items");
+    
+    new Sortable(itemsContainer, {
+      group: "kanban",
+      animation: 150,
+      ghostClass: "sortable-ghost",
+      onEnd: async function (evt) {
+        const itemId = evt.item.dataset.id;
+        const targetColumn = evt.to.parentElement;
+        const newEtapa = targetColumn.dataset.etapa;
+
+        if (itemId) {
+          // Atualiza a etapa no Chatwoot e depois recalcula totais locais
+          await updateConversationEtapa(itemId, newEtapa);
+          recalculateColumnTotals();
+        }
+      },
+    });
+  });
+}
+
+// Faz requisição POST para atualizar a etapa_kanban na conversa
+async function updateConversationEtapa(conversationId, newEtapa) {
+  try {
+    const etapaValue = newEtapa === "Sem Etapa" ? null : newEtapa;
+    const url = `${API_BASE_URL}/accounts/${accountId}/conversations/${conversationId}/custom_attributes`;
     const response = await fetch(url, {
       method: "POST",
       headers: {
         api_access_token: apiToken,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ status: newStatus }),
+      body: JSON.stringify({
+        custom_attributes: {
+          etapa_kanban: etapaValue
+        }
+      }),
     });
 
     if (!response.ok) {
-      throw new Error(`Erro na API: ${response.status} ${response.statusText}`);
+      throw new Error(`Erro ao mover conversa na API do Chatwoot: ${response.status}`);
     }
-
-    // Atualizar contadores
-    updateCounters();
   } catch (error) {
-    console.error("Erro ao atualizar status da conversa:", error);
-    alert("Erro ao atualizar status. A conversa será recarregada.");
+    console.error("Erro ao atualizar etapa:", error);
+    alert("Erro ao salvar alteração de etapa no Chatwoot. Recarregando dados...");
     loadConversations();
   }
 }
 
-function updateCounters() {
-  kanbanColumns.forEach((column) => {
-    const itemsCount = column.querySelectorAll(".kanban-item").length;
-    column.querySelector(".counter").textContent = itemsCount;
+// Recalcula contadores e soma do valor_venda por coluna localmente
+function recalculateColumnTotals() {
+  const columns = document.querySelectorAll(".kanban-column");
+  columns.forEach(column => {
+    const counter = column.querySelector(".counter");
+    const totalSpan = column.querySelector(".column-total");
+    const items = column.querySelectorAll(".kanban-item");
+    
+    counter.textContent = items.length;
+    
+    let totalSum = 0;
+    items.forEach(item => {
+      const val = parseFloat(item.dataset.valor) || 0;
+      totalSum += val;
+    });
+    
+    totalSpan.textContent = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalSum);
   });
 }
 
-function getStatusLabel(status) {
-  const statusMap = {
-    pending: "Pendente",
-    open: "Em Aberto",
-    resolved: "Resolvido",
-    closed: "Fechado",
-    snoozed: "Adiado",
-  };
-
-  return statusMap[status] || status;
+// Helpers
+function showLoading() {
+  document.getElementById('loading-overlay').style.display = 'flex';
 }
 
-// Função para alternar visibilidade do token de API
+function hideLoading() {
+  document.getElementById('loading-overlay').style.display = 'none';
+}
+
+function slugify(text) {
+  return text.toString().toLowerCase().trim()
+    .replace(/\s+/g, '-')
+    .replace(/[^\w\-]+/g, '')
+    .replace(/\-\-+/g, '-');
+}
+
 function toggleApiTokenVisibility() {
   const icon = toggleApiTokenBtn.querySelector('i');
   
@@ -522,4 +445,3 @@ function toggleApiTokenVisibility() {
     toggleApiTokenBtn.title = 'Mostrar Token';
   }
 }
-

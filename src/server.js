@@ -16,9 +16,22 @@ app.use(express.json());
 // Servir arquivos estáticos
 app.use(express.static(path.join(__dirname)));
 
+// Endpoint para ler as configurações globais de ambiente
+app.get("/api/config", (req, res) => {
+  res.json({
+    hasGlobalCredentials: !!process.env.CHATWOOT_API_KEY,
+    accountId: process.env.CHATWOOT_ACCOUNT_ID || "",
+    baseUrl: process.env.BASE_URL || ""
+  });
+});
+
 // Proxy para a API do Chatwoot
 app.use("/api/v1", async (req, res) => {
-  const apiToken = req.headers["api_access_token"];
+  let apiToken = req.headers["api_access_token"];
+
+  if (!apiToken || apiToken === "null" || apiToken === "undefined" || apiToken === "") {
+    apiToken = process.env.CHATWOOT_API_KEY;
+  }
 
   if (!apiToken) {
     return res.status(401).json({ error: "Token de API não fornecido" });
