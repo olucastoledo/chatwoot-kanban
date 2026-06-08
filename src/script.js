@@ -82,6 +82,30 @@ async function loadConversations() {
     return;
   }
 
+  // Verificar se a conta está autorizada nas configurações globais
+  try {
+    const configRes = await fetch("/api/config");
+    const configData = await configRes.json();
+    if (configData.enabledAccounts) {
+      const enabledList = configData.enabledAccounts.split(",").map(id => id.trim());
+      if (!enabledList.includes(accountId.toString())) {
+        const header = document.querySelector("header");
+        if (header) header.style.display = "none";
+        const container = document.getElementById("kanban-container");
+        container.innerHTML = `
+          <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; height: 80vh; color: #556070;">
+            <i class="fas fa-lock" style="font-size: 3rem; margin-bottom: 1rem; color: #ff5c5c;"></i>
+            <h2>Acesso Restrito</h2>
+            <p style="margin-top: 0.5rem; text-align: center;">Este recurso (CRM Kanban) não está habilitado para esta conta/workspace.<br>Fale com o administrador da plataforma.</p>
+          </div>
+        `;
+        return;
+      }
+    }
+  } catch (e) {
+    console.error("Erro ao verificar restrição de contas:", e);
+  }
+
   // Salvar no localStorage se não for credencial global
   if (apiToken !== "global") {
     localStorage.setItem("chatwoot_api_token", apiToken);

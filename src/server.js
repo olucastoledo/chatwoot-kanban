@@ -25,7 +25,8 @@ app.get("/api/config", (req, res) => {
   res.json({
     hasGlobalCredentials: !!process.env.CHATWOOT_API_KEY,
     accountId: process.env.CHATWOOT_ACCOUNT_ID || "",
-    baseUrl: baseUrl
+    baseUrl: baseUrl,
+    enabledAccounts: process.env.KANBAN_ENABLED_ACCOUNTS || ""
   });
 });
 
@@ -39,6 +40,18 @@ app.use("/api/v1", async (req, res) => {
 
   if (!apiToken) {
     return res.status(401).json({ error: "Token de API não fornecido" });
+  }
+
+  // Verificar se a conta atual está habilitada
+  const accountMatch = req.url.match(/\/accounts\/(\d+)/);
+  const requestAccountId = accountMatch ? accountMatch[1] : null;
+  const enabledAccountsStr = process.env.KANBAN_ENABLED_ACCOUNTS;
+
+  if (enabledAccountsStr && requestAccountId) {
+    const enabledList = enabledAccountsStr.split(",").map(id => id.trim());
+    if (!enabledList.includes(requestAccountId)) {
+      return res.status(403).json({ error: "Este recurso (Kanban CRM) não está habilitado para esta conta." });
+    }
   }
 
   try {
