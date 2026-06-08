@@ -91,7 +91,7 @@ async function loadConversations() {
   try {
     showLoading();
 
-    // 1. Verificar e criar atributos personalizados no Chatwoot se necessário
+    // 1. Verificar e criar atributos personalizados no Chatwoot se necessário (do modelo contact_attribute)
     await checkAndCreateCustomAttributes();
 
     // 2. Construir colunas dinâmicas no DOM baseadas nas etapas do Kanban
@@ -117,7 +117,7 @@ async function loadConversations() {
   }
 }
 
-// Verifica se os atributos etapa_kanban e valor_venda existem e os cria se necessário
+// Verifica se os atributos etapa_kanban e valor_venda existem e os cria se necessário (nos Contatos)
 async function checkAndCreateCustomAttributes() {
   try {
     const res = await fetch(`${API_BASE_URL}/accounts/${accountId}/custom_attribute_definitions`, {
@@ -134,11 +134,14 @@ async function checkAndCreateCustomAttributes() {
     
     const definitions = await res.json();
     
-    const etapaDef = definitions.find(d => d.attribute_key === "etapa_kanban");
-    const valorDef = definitions.find(d => d.attribute_key === "valor_venda");
+    // Filtrar apenas do modelo de contato (contact_attribute)
+    const contactDefinitions = definitions.filter(d => d.attribute_model === "contact_attribute");
+    
+    const etapaDef = contactDefinitions.find(d => d.attribute_key === "etapa_kanban");
+    const valorDef = contactDefinitions.find(d => d.attribute_key === "valor_venda");
     
     if (!etapaDef) {
-      console.log("Criando atributo personalizado 'etapa_kanban' no Chatwoot...");
+      console.log("Criando atributo personalizado de contato 'etapa_kanban' no Chatwoot...");
       const createRes = await fetch(`${API_BASE_URL}/accounts/${accountId}/custom_attribute_definitions`, {
         method: "POST",
         headers: {
@@ -150,13 +153,13 @@ async function checkAndCreateCustomAttributes() {
             attribute_display_name: "Etapa Kanban",
             attribute_key: "etapa_kanban",
             attribute_display_type: "list",
-            attribute_model: "conversation_attribute",
+            attribute_model: "contact_attribute",
             attribute_values: customEtapas
           }
         })
       });
       if (!createRes.ok) {
-        console.error("Falha ao criar o atributo 'etapa_kanban'. Usando etapas padrão.");
+        console.error("Falha ao criar o atributo de contato 'etapa_kanban'. Usando etapas padrão.");
       }
     } else {
       // Garantir que a primeira opção seja 'Aguardando...' se ela não existir
@@ -170,7 +173,7 @@ async function checkAndCreateCustomAttributes() {
     }
     
     if (!valorDef) {
-      console.log("Criando atributo personalizado 'valor_venda' no Chatwoot...");
+      console.log("Criando atributo personalizado de contato 'valor_venda' no Chatwoot...");
       const createRes = await fetch(`${API_BASE_URL}/accounts/${accountId}/custom_attribute_definitions`, {
         method: "POST",
         headers: {
@@ -182,12 +185,12 @@ async function checkAndCreateCustomAttributes() {
             attribute_display_name: "Valor da Venda",
             attribute_key: "valor_venda",
             attribute_display_type: "currency",
-            attribute_model: "conversation_attribute"
+            attribute_model: "contact_attribute"
           }
         })
       });
       if (!createRes.ok) {
-        console.error("Falha ao criar o atributo 'valor_venda'.");
+        console.error("Falha ao criar o atributo de contato 'valor_venda'.");
       }
     }
   } catch (e) {
@@ -262,13 +265,15 @@ async function fetchConversations() {
   return allConversations;
 }
 
-// Distribui os cards nas colunas com base no custom_attribute
+// Distribui os cards nas colunas com base no custom_attribute de Contato
 function distributeConversations(conversations) {
   conversations.forEach(conversation => {
-    const customAttributes = conversation.custom_attributes || {};
+    // Ler do Contato remetente
+    const contact = conversation.meta?.sender || conversation.sender || {};
+    const customAttributes = contact.custom_attributes || {};
     const etapa = customAttributes.etapa_kanban;
     
-    // Qualquer conversa sem etapa definida vai por padrão para a primeira coluna ("Aguardando...")
+    // Qualquer contato sem etapa definida vai por padrão para a primeira coluna ("Aguardando...")
     let targetSlug = "aguardando"; 
     if (etapa && customEtapas.includes(etapa)) {
       targetSlug = slugify(etapa);
@@ -288,12 +293,15 @@ function createConversationCard(conversation) {
   card.className = "kanban-item";
   card.dataset.id = conversation.id;
   
+  const contact = conversation.meta?.sender || conversation.sender || {};
+  card.dataset.contactId = contact.id; // Guarda o contactId no card para podermos atualizar o contato
+
   // Guardar valor da venda no dataset para cálculos rápidos locais
-  const valorVenda = parseFloat(conversation.custom_attributes?.valor_venda) || 0;
+  const valorVenda = parseFloat(contact.custom_attributes?.valor_venda) || 0;
   card.dataset.valor = valorVenda;
 
   // Nome do cliente
-  const senderName = conversation.meta?.sender?.name || conversation.sender?.name || `Cliente #${conversation.id}`;
+  const senderName = contact.name || `Cliente #${conversation.id}`;
 
   // Data
   let createdAt = new Date();
@@ -367,12 +375,13 @@ function initializeSortable() {
       ghostClass: "sortable-ghost",
       onEnd: async function (evt) {
         const itemId = evt.item.dataset.id;
+        const contactId = evt.item.dataset.contactId;
         const targetColumn = evt.to.parentElement;
         const newEtapa = targetColumn.dataset.etapa;
 
-        if (itemId) {
-          // Atualiza a etapa no Chatwoot e depois recalcula totais locais
-          await updateConversationEtapa(itemId, newEtapa);
+        if (itemId && contactId) {
+          // Atualiza a etapa do CONTATO no Chatwoot e depois recalcula totais locais
+          await updateContactEtapa(contactId, newEtapa);
           recalculateColumnTotals();
         }
       },
@@ -380,12 +389,12 @@ function initializeSortable() {
   });
 }
 
-// Faz requisição POST para atualizar a etapa_kanban na conversa
-async function updateConversationEtapa(conversationId, newEtapa) {
+// Faz requisição PUT para atualizar a etapa_kanban no contato
+async function updateContactEtapa(contactId, newEtapa) {
   try {
-    const url = `${API_BASE_URL}/accounts/${accountId}/conversations/${conversationId}/custom_attributes`;
+    const url = `${API_BASE_URL}/accounts/${accountId}/contacts/${contactId}`;
     const response = await fetch(url, {
-      method: "POST",
+      method: "PUT",
       headers: {
         api_access_token: apiToken,
         "Content-Type": "application/json",
@@ -398,10 +407,10 @@ async function updateConversationEtapa(conversationId, newEtapa) {
     });
 
     if (!response.ok) {
-      throw new Error(`Erro ao mover conversa na API do Chatwoot: ${response.status}`);
+      throw new Error(`Erro ao mover contato na API do Chatwoot: ${response.status}`);
     }
   } catch (error) {
-    console.error("Erro ao atualizar etapa:", error);
+    console.error("Erro ao atualizar etapa do contato:", error);
     alert("Erro ao salvar alteração de etapa no Chatwoot. Recarregando dados...");
     loadConversations();
   }
