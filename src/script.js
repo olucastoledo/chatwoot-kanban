@@ -29,12 +29,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     const configRes = await fetch("/api/config");
     const configData = await configRes.json();
 
+    // Ler ID da conta a partir da query string da URL se fornecido (para múltiplos workspaces)
+    const urlParams = new URLSearchParams(window.location.search);
+    const accountIdFromUrl = urlParams.get("accountId");
+
     if (configData.hasGlobalCredentials) {
       // Ocultar formulário de credenciais
       document.getElementById("header-controls").style.display = "none";
       // Usar credenciais globais (o token será injetado pelo proxy no backend)
       apiToken = "global"; 
-      accountId = configData.accountId;
+      accountId = accountIdFromUrl || configData.accountId || "2";
       
       // Carregar automaticamente
       await loadConversations();
